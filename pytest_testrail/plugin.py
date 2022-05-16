@@ -1,12 +1,24 @@
 # -*- coding: UTF-8 -*-
-from datetime import datetime
-from operator import itemgetter
-
-import pytest
+import os
 import re
 import warnings
+from datetime import datetime
+from operator import itemgetter
+from pathlib import Path
+from typing import Union
+import pytest
 
 # Reference: http://docs.gurock.com/testrail-api2/reference-statuses
+
+# CREATE FILE PY MARKS_TESTRAIL IN ROOT PROJECT
+# ====================================IOS ======ANDROID ===========
+# MARKS_IDS = {
+#     "test_acquiring_with_save_card": ["C21428", "C19910"]
+# }
+# from marks_testrail import MARKS_IDS
+
+PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+
 TESTRAIL_TEST_STATUS = {
     "passed": 1,
     "blocked": 2,
@@ -32,9 +44,9 @@ CLOSE_TESTPLAN_URL = 'close_plan/{}'
 GET_TESTRUN_URL = 'get_run/{}'
 GET_TESTPLAN_URL = 'get_plan/{}'
 GET_TESTS_URL = 'get_tests/{}'
-
+ADD_ATTACHMENTS_FOR_RUN_URL = 'add_attachment_to_result/{}'
 COMMENT_SIZE_LIMIT = 4000
-
+RESPONSE_ID = {}
 
 class DeprecatedTestDecorator(DeprecationWarning):
     pass
@@ -96,10 +108,10 @@ def get_test_outcome(outcome):
     return PYTEST_TO_TESTRAIL_STATUS[outcome]
 
 
-def testrun_name():
+def testrun_name(app):
     """Returns testrun name with timestamp"""
-    now = datetime.utcnow()
-    return 'Automated Run {}'.format(now.strftime(DT_FORMAT))
+    now = datetime.now()
+    return 'Automated Run {} Platform {}'.format(now.strftime(DT_FORMAT), app)
 
 
 def clean_test_ids(test_ids):
@@ -140,11 +152,13 @@ def get_testrail_keys(items):
 
 class PyTestRailPlugin(object):
     def __init__(self, client, assign_user_id, project_id, suite_id, include_all, cert_check, tr_name,
-                 tr_description='', run_id=0, plan_id=0, version='', close_on_complete=False,
-                 publish_blocked=True, skip_missing=False, milestone_id=None, custom_comment=None):
+                 tr_description='', run_id=0,
+                 plan_id=0, version='', close_on_complete=False, publish_blocked=True, skip_missing=False,
+                 milestone_id=None, custom_comment=None, app='android'):
         self.assign_user_id = assign_user_id
         self.cert_check = cert_check
         self.client = client
+        self.app = app
         self.project_id = project_id
         self.results = []
         self.suite_id = suite_id
@@ -192,7 +206,7 @@ class PyTestRailPlugin(object):
                         item.add_marker(mark)
         else:
             if self.testrun_name is None:
-                self.testrun_name = testrun_name()
+                self.testrun_name = testrun_name(self.app)
 
             self.create_test_run(
                 self.assign_user_id,
@@ -221,7 +235,7 @@ class PyTestRailPlugin(object):
         if item.get_closest_marker(TESTRAIL_PREFIX):
             testcaseids = item.get_closest_marker(TESTRAIL_PREFIX).kwargs.get('ids')
             if rep.when == 'call' and testcaseids:
-                if defectids:
+                if defectids != None:
                     self.add_result(
                         clean_test_ids(testcaseids),
                         get_test_outcome(outcome.get_result().outcome),
@@ -245,9 +259,14 @@ class PyTestRailPlugin(object):
         if self.results:
             tests_list = [str(result['case_id']) for result in self.results]
             print('[{}] Testcases to publish: {}'.format(TESTRAIL_PREFIX, ', '.join(tests_list)))
-
+            print('REPORT TO TESTRAIL - LINK https://testrail.1cupis.org/index.php?/runs/view/{}'.format(self.testrun_id))
             if self.testrun_id:
                 self.add_results(self.testrun_id)
+                OUTPUT_ROOT = os.path.join(PROJECT_ROOT, 'output')
+                videos = self.get_failed_videos()
+                if videos:
+                    for item in videos:
+                        self.add_attachment_for_run(item, f"{OUTPUT_ROOT}/{videos[item]}.mov")
             elif self.testplan_id:
                 testruns = self.get_available_testruns(self.testplan_id)
                 print('[{}] Testruns to update: {}'.format(TESTRAIL_PREFIX, ', '.join([str(elt) for elt in testruns])))
@@ -263,6 +282,18 @@ class PyTestRailPlugin(object):
         print('[{}] End publishing'.format(TESTRAIL_PREFIX))
 
     # plugin
+
+    def get_failed_videos(self):
+        OUTPUT_ROOT = os.path.join(PROJECT_ROOT, 'output')
+        videos = os.listdir(OUTPUT_ROOT)
+        videos_filter = {}
+        for x in videos:
+            if x.find('mov') > 0:
+                clear_video_name = x.replace('.mov', '')
+                mark = MARKS_IDS[clear_video_name][0] if self.app == 'ios' else MARKS_IDS[clear_video_name][1]
+                clear_mark = mark.replace('C', '')
+                videos_filter[RESPONSE_ID[clear_mark]] = clear_video_name
+        return videos_filter
 
     def add_result(self, test_ids, status, comment='', defects=None, duration=0, test_parametrize=None):
         """
@@ -300,8 +331,7 @@ class PyTestRailPlugin(object):
             converter = lambda s, c: str(bytes(s, "utf-8"), c)
         # Results are sorted by 'case_id' and by 'status_id' (worst result at the end)
 
-        # Comment sort by status_id due to issue with pytest-rerun failures,
-        # for details refer to issue https://github.com/allankp/pytest-testrail/issues/100
+        # Comment sort by status_id due to issue with pytest-rerun failures, for details refer to issue https://github.com/allankp/pytest-testrail/issues/100
         # self.results.sort(key=itemgetter('status_id'))
         self.results.sort(key=itemgetter('case_id'))
 
@@ -338,12 +368,14 @@ class PyTestRailPlugin(object):
                     # Indent text to avoid string formatting by TestRail. Limit size of comment.
                     entry['comment'] += u"# Pytest result: #\n"
                     entry['comment'] += u'Log truncated\n...\n' if len(str(comment)) > COMMENT_SIZE_LIMIT else u''
-                    entry['comment'] += u"    " + converter(str(comment), "utf-8")[-COMMENT_SIZE_LIMIT:].replace('\n', '\n    ') # noqa
+                    entry['comment'] += u"    " + converter(str(comment), "utf-8")[-COMMENT_SIZE_LIMIT:].replace('\n',
+                                                                                                                 '\n    ')
                 else:
                     # Indent text to avoid string formatting by TestRail. Limit size of comment.
                     entry['comment'] += u"# Pytest result: #\n"
                     entry['comment'] += u'Log truncated\n...\n' if len(str(comment)) > COMMENT_SIZE_LIMIT else u''
-                    entry['comment'] += u"    " + converter(str(comment), "utf-8")[-COMMENT_SIZE_LIMIT:].replace('\n', '\n    ') # noqa
+                    entry['comment'] += u"    " + converter(str(comment), "utf-8")[-COMMENT_SIZE_LIMIT:].replace('\n',
+                                                                                                                 '\n    ')
             elif comment == '':
                 entry['comment'] = self.custom_comment
             duration = result.get('duration')
@@ -357,12 +389,27 @@ class PyTestRailPlugin(object):
             data,
             cert_check=self.cert_check
         )
+        if response:
+            for x in range(0, len(self.results)):
+                if self.results[x]['status_id'] == 5:
+                    RESPONSE_ID[str(data['results'][x]['case_id'])] = str(response[x]['id'])
         error = self.client.get_error(response)
         if error:
             print('[{}] Info: Testcases not published for following reason: "{}"'.format(TESTRAIL_PREFIX, error))
 
-    def create_test_run(self, assign_user_id, project_id, suite_id, include_all,
-                        testrun_name, tr_keys, milestone_id, description=''):
+    @staticmethod
+    def _path(path: Union[Path, str]) -> Path:
+        return path if isinstance(path, Path) else Path(path)
+
+    def add_attachment_for_run(self, result_id, video):
+        file = self._path(video)
+        with file.open("rb") as attachment:
+            self.client.request_attachment(ADD_ATTACHMENTS_FOR_RUN_URL.format(result_id), attachment,
+                                           cert_check=self.cert_check)
+
+    def create_test_run(
+            self, assign_user_id, project_id, suite_id, include_all, testrun_name, tr_keys, milestone_id,
+            description=''):
         """
         Create testrun with ids collected from markers.
 

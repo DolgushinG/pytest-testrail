@@ -1,8 +1,11 @@
 # -*- coding: UTF-8 -*-
 import os
 import sys
-from .plugin import PyTestRailPlugin
-from .testrail_api import APIClient
+
+from env_testrail import EMAIL, PASSWORD
+from pytest_testrail.plugin import PyTestRailPlugin
+from pytest_testrail.testrail_api import APIClient
+
 if sys.version_info.major == 2:
     # python2
     import ConfigParser as configparser
@@ -128,13 +131,14 @@ def pytest_configure(config):
         cfg_file_path = config.getoption('--tr-config')
         config_manager = ConfigManager(cfg_file_path, config)
         client = APIClient(config_manager.getoption('tr-url', 'url', 'API'),
-                           config_manager.getoption('tr-email', 'email', 'API'),
-                           config_manager.getoption('tr-password', 'password', 'API'),
+                           EMAIL,
+                           PASSWORD,
                            timeout=config_manager.getoption('tr-timeout', 'timeout', 'API'))
 
         config.pluginmanager.register(
             PyTestRailPlugin(
                 client=client,
+                app=config_manager.getoption('app', 'app'),
                 assign_user_id=config_manager.getoption('tr-testrun-assignedto-id', 'assignedto_id', 'TESTRUN'),
                 project_id=config_manager.getoption('tr-testrun-project-id', 'project_id', 'TESTRUN'),
                 suite_id=config_manager.getoption('tr-testrun-suite-id', 'suite_id', 'TESTRUN'),

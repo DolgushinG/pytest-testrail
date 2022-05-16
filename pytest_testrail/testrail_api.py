@@ -12,8 +12,9 @@
 #
 
 import sys
-import requests
 import time
+import requests
+
 
 if sys.version_info.major == 2:
     from urlparse import urljoin
@@ -83,7 +84,7 @@ class APIClient:
             pause = int(r.headers.get('Retry-After', 60))
             print("Too many requests: pause for {}s".format(pause))
             time.sleep(pause)
-            return self.send_get(uri, **kwargs)
+            return self.send_get(uri,**kwargs)
         else:
             return r.json()
 
@@ -136,3 +137,23 @@ class APIClient:
         """
         if 'error' in json_response and json_response['error']:
             return json_response['error']
+
+    def request_attachment(self, uri, attachment, **kwargs):
+        cert_check = kwargs.get('cert_check', self.cert_check)
+        url = self._url + uri
+        r = requests.request(
+            method="POST",
+            url=url,
+            files={"attachment": attachment},
+            timeout=self.timeout,
+            data={},
+            auth=(self.user, self.password),
+            verify=cert_check
+        )
+        if r.status_code == 429:  # Too many requests
+            pause = int(r.headers.get('Retry-After', 60))
+            print("Too many requests: pause for {}s".format(pause))
+            time.sleep(pause)
+            return self.request_attachment(self, uri, attachment, **kwargs)
+        else:
+            return r.json()
